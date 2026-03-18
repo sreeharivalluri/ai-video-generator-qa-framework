@@ -1,0 +1,28 @@
+{
+  "preset": "ts-jest",
+  "testEnvironment": "node",
+  "rootDir": ".",
+  "testMatch": ["**/tests/**/*.spec.ts", "**/tests/**/*.test.ts"],
+  "moduleNameMapper": {
+    "^@src/(.*)$": "<rootDir>/src/$1",
+    "^@tests/(.*)$": "<rootDir>/tests/$1",
+    "^@config/(.*)$": "<rootDir>/config/$1"
+  },
+  "collectCoverageFrom": ["src/**/*.ts", "!src/**/*.d.ts"],
+  "coverageReporters": ["text", "lcov", "html"],
+  "coverageDirectory": "coverage",
+  "reporters": [
+    "default",
+    ["jest-junit", {
+      "outputDirectory": "test-results",
+      "outputName": "junit.xml",
+      "classNameTemplate": "{classname}",
+      "titleTemplate": "{title}"
+    }]
+  ],
+  "globalSetup": "./src/utils/global-setup.ts",
+  "globalTeardown": "./src/utils/global-teardown.ts",
+  "setupFilesAfterFramework": ["./src/utils/test-setup.ts"],
+  "testTimeout": 120000,
+  "verbose": true
+}

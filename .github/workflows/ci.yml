@@ -1,0 +1,223 @@
+name: AI Video Generator QA — CI Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'fix/**']
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Nightly regression run at 01:00 UTC
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Run tests for specific platform (leave blank for all)'
+        required: false
+        default: ''
+        type: choice
+        options: ['', 'runway', 'pika', 'kling', 'sora', 'cross-platform']
+      environment:
+        description: 'Target environment'
+        required: false
+        default: 'ci'
+        type: choice
+        options: ['ci', 'staging']
+
+env:
+  NODE_VERSION: '20'
+  TEST_ENV: ${{ github.event.inputs.environment || 'ci' }}
+
+jobs:
+  # ─── Lint & Type Check ───────────────────────────────────────────────────────
+  lint-and-typecheck:
+    name: Lint & Type Safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npm run lint
+
+  # ─── Smoke Tests (fast gate on every push) ───────────────────────────────────
+  smoke-tests:
+    name: Smoke Tests — All Platforms
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run smoke tests
+        run: npm test -- --testNamePattern='smoke' --ci
+        env:
+          TEST_ENV: ${{ env.TEST_ENV }}
+          LOG_LEVEL: warn
+
+      - name: Upload smoke test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results
+          path: test-results/
+          retention-days: 7
+
+  # ─── Platform-Specific Tests (parallel) ──────────────────────────────────────
+  runway-tests:
+    name: Runway ML — Full Suite
+    runs-on: ubuntu-latest
+    needs: smoke-tests
+    if: github.event.inputs.platform == '' || github.event.inputs.platform == 'runway'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: 'npm' }
+      - run: npm ci
+      - name: Run Runway tests
+        run: npm run test:runway -- --ci --coverage
+        env:
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          RUNWAY_BASE_URL: ${{ vars.RUNWAY_BASE_URL }}
+          TEST_ENV: ${{ env.TEST_ENV }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runway-results
+          path: |
+            test-results/
+            coverage/
+          retention-days: 14
+
+  pika-tests:
+    name: Pika Labs — Full Suite
+    runs-on: ubuntu-latest
+    needs: smoke-tests
+    if: github.event.inputs.platform == '' || github.event.inputs.platform == 'pika'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: 'npm' }
+      - run: npm ci
+      - name: Run Pika tests
+        run: npm run test:pika -- --ci
+        env:
+          PIKA_API_KEY: ${{ secrets.PIKA_API_KEY }}
+          TEST_ENV: ${{ env.TEST_ENV }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pika-results
+          path: test-results/
+          retention-days: 14
+
+  kling-tests:
+    name: Kling AI — Full Suite
+    runs-on: ubuntu-latest
+    needs: smoke-tests
+    if: github.event.inputs.platform == '' || github.event.inputs.platform == 'kling'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: 'npm' }
+      - run: npm ci
+      - name: Run Kling tests
+        run: npm run test:kling -- --ci
+        env:
+          KLING_ACCESS_KEY_ID: ${{ secrets.KLING_ACCESS_KEY_ID }}
+          KLING_ACCESS_KEY_SECRET: ${{ secrets.KLING_ACCESS_KEY_SECRET }}
+          TEST_ENV: ${{ env.TEST_ENV }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kling-results
+          path: test-results/
+          retention-days: 14
+
+  cross-platform-tests:
+    name: Cross-Platform Comparison Suite
+    runs-on: ubuntu-latest
+    needs: [runway-tests, pika-tests, kling-tests]
+    if: always() && (github.event.inputs.platform == '' || github.event.inputs.platform == 'cross-platform')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: 'npm' }
+      - run: npm ci
+      - name: Run cross-platform tests
+        run: npm run test:cross -- --ci
+        env:
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          PIKA_API_KEY: ${{ secrets.PIKA_API_KEY }}
+          KLING_ACCESS_KEY_ID: ${{ secrets.KLING_ACCESS_KEY_ID }}
+          KLING_ACCESS_KEY_SECRET: ${{ secrets.KLING_ACCESS_KEY_SECRET }}
+          TEST_ENV: ${{ env.TEST_ENV }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-platform-results
+          path: test-results/
+          retention-days: 14
+
+  # ─── Quality Gate — blocks merge if tests fail ───────────────────────────────
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    needs: [smoke-tests, runway-tests, pika-tests, kling-tests, cross-platform-tests]
+    if: always()
+    steps:
+      - name: Evaluate quality gate
+        run: |
+          SMOKE="${{ needs.smoke-tests.result }}"
+          CROSS="${{ needs.cross-platform-tests.result }}"
+
+          if [[ "$SMOKE" != "success" ]]; then
+            echo "❌ Quality gate FAILED: smoke tests did not pass ($SMOKE)"
+            exit 1
+          fi
+
+          if [[ "$CROSS" != "success" && "$CROSS" != "skipped" ]]; then
+            echo "❌ Quality gate FAILED: cross-platform tests did not pass ($CROSS)"
+            exit 1
+          fi
+
+          echo "✅ Quality gate PASSED"
+
+  # ─── Nightly: Community Feedback Monitor ─────────────────────────────────────
+  feedback-monitor:
+    name: Community Feedback Monitor (Nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}', cache: 'npm' }
+      - run: npm ci
+      - name: Run feedback monitoring
+        run: npx ts-node src/utils/feedback-monitor.ts
+        env:
+          LOG_LEVEL: info
+      - name: Upload feedback report
+        uses: actions/upload-artifact@v4
+        with:
+          name: feedback-report-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
